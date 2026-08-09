@@ -4,48 +4,67 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from x402.http import FacilitatorConfig, HTTPFacilitatorClient, PaymentOption
+from x402.http import (
+    FacilitatorConfig,
+    HTTPFacilitatorClient,
+    PaymentOption,
+)
 from x402.http.middleware.fastapi import PaymentMiddlewareASGI
 from x402.http.types import RouteConfig
 from x402.mechanisms.avm import ALGORAND_TESTNET_CAIP2
 from x402.mechanisms.avm.exact import ExactAvmServerScheme
 from x402.server import x402ResourceServer
 
+
 load_dotenv()
 
+
 AVM_ADDRESS = os.getenv("AVM_ADDRESS")
+
 FACILITATOR_URL = os.getenv(
     "FACILITATOR_URL",
     "https://facilitator.goplausible.xyz",
 )
 
+
 if not AVM_ADDRESS:
     raise ValueError("AVM_ADDRESS is missing in .env")
 
-app = FastAPI(title="AlterBlock Sentinel")
 
-# Frontend development server
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+app = FastAPI(
+    title="AlterBlock Sentinel"
 )
+
+
+# -----------------------------
+# x402 Facilitator
+# -----------------------------
 
 facilitator = HTTPFacilitatorClient(
-    FacilitatorConfig(url=FACILITATOR_URL)
+    FacilitatorConfig(
+        url=FACILITATOR_URL
+    )
 )
 
-server = x402ResourceServer(facilitator)
+
+# -----------------------------
+# x402 Resource Server
+# -----------------------------
+
+server = x402ResourceServer(
+    facilitator
+)
+
 
 server.register(
     ALGORAND_TESTNET_CAIP2,
     ExactAvmServerScheme(),
 )
+
+
+# -----------------------------
+# Protected Routes
+# -----------------------------
 
 routes = {
     "GET /data": RouteConfig(
@@ -60,12 +79,42 @@ routes = {
     ),
 }
 
+
+# -----------------------------
+# x402 Payment Middleware
+# -----------------------------
+
 app.add_middleware(
     PaymentMiddlewareASGI,
     routes=routes,
     server=server,
 )
 
+
+# -----------------------------
+# CORS
+# -----------------------------
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=[
+        "PAYMENT-REQUIRED",
+        "PAYMENT-SIGNATURE",
+        "PAYMENT-RESPONSE",
+    ],
+)
+
+
+# -----------------------------
+# Health Check
+# -----------------------------
 
 @app.get("/health")
 async def health_check():
@@ -75,6 +124,10 @@ async def health_check():
     }
 
 
+# -----------------------------
+# Protected Data
+# -----------------------------
+
 @app.get("/data")
 async def get_premium_data():
     return {
@@ -82,6 +135,10 @@ async def get_premium_data():
         "data": "Here is your premium content!",
     }
 
+
+# -----------------------------
+# Run Server
+# -----------------------------
 
 if __name__ == "__main__":
     import uvicorn
