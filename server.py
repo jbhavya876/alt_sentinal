@@ -1,41 +1,58 @@
 import os
+
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
 from x402.http import FacilitatorConfig, HTTPFacilitatorClient, PaymentOption
-from x402.http.middleware.fastapi import PaymentMiddlewareASGI  # <-- Use ASGI Class
+from x402.http.middleware.fastapi import PaymentMiddlewareASGI
 from x402.http.types import RouteConfig
-from x402.mechanisms.avm import USDC_TESTNET_ASA_ID, ALGORAND_TESTNET_CAIP2
+from x402.mechanisms.avm import ALGORAND_TESTNET_CAIP2
 from x402.mechanisms.avm.exact import ExactAvmServerScheme
 from x402.server import x402ResourceServer
-from x402.schemas import AssetAmount
 
 load_dotenv()
 
-# --- Configuration ---
 AVM_ADDRESS = os.getenv("AVM_ADDRESS")
-FACILITATOR_URL = os.getenv("FACILITATOR_URL", "https://facilitator.goplausible.xyz")
+FACILITATOR_URL = os.getenv(
+    "FACILITATOR_URL",
+    "https://facilitator.goplausible.xyz",
+)
 
 if not AVM_ADDRESS:
-    raise ValueError("AVM_ADDRESS is missing in .env file")
+    raise ValueError("AVM_ADDRESS is missing in .env")
 
-# --- App Setup ---
-app = FastAPI(title="Algorand x402 Endpoint")
+app = FastAPI(title="AlterBlock Sentinel")
 
-# 1. Initialize Facilitator & Server (Use Async client for FastAPI)
-facilitator = HTTPFacilitatorClient(FacilitatorConfig(url=FACILITATOR_URL))
+# Frontend development server
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+facilitator = HTTPFacilitatorClient(
+    FacilitatorConfig(url=FACILITATOR_URL)
+)
+
 server = x402ResourceServer(facilitator)
 
-# 2. Register Algorand Scheme
-server.register(ALGORAND_TESTNET_CAIP2, ExactAvmServerScheme())
+server.register(
+    ALGORAND_TESTNET_CAIP2,
+    ExactAvmServerScheme(),
+)
 
-# 3. Define Protected Routes
 routes = {
     "GET /data": RouteConfig(
         accepts=PaymentOption(
             scheme="exact",
             pay_to=AVM_ADDRESS,
-            # Use simple string price (auto-converts to microUSDC)
-            price="$0.01", 
+            price="$0.01",
             network=ALGORAND_TESTNET_CAIP2,
         ),
         description="Premium Data Access",
@@ -43,18 +60,34 @@ routes = {
     ),
 }
 
-# 4. Apply Middleware (Correct Usage with ASGI Class)
-app.add_middleware(PaymentMiddlewareASGI, routes=routes, server=server)
+app.add_middleware(
+    PaymentMiddlewareASGI,
+    routes=routes,
+    server=server,
+)
+
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "message": "Server is running"}
+    return {
+        "status": "ok",
+        "service": "AlterBlock Sentinel",
+    }
+
 
 @app.get("/data")
 async def get_premium_data():
-    return {"status": "success", "data": "Here is your premium content!"}
+    return {
+        "status": "success",
+        "data": "Here is your premium content!",
+    }
+
 
 if __name__ == "__main__":
     import uvicorn
-    print(f"Starting server on http://0.0.0.0:8000")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+    )
