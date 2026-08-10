@@ -2,11 +2,20 @@
 .env.*
 !.env.example
 
+# Python bytecode, test output, and local tooling
 __pycache__/
 *.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
 
 .venv/
 venv/
+env/
 
 # Node.js / frontend tooling
 node_modules/
@@ -17,3 +26,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
+*.swp

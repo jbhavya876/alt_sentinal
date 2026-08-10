@@ -14,6 +14,7 @@ from x402.http.types import RouteConfig
 from x402.mechanisms.avm import ALGORAND_TESTNET_CAIP2
 from x402.mechanisms.avm.exact import ExactAvmServerScheme
 from x402.server import x402ResourceServer
+from sentinel.analyzer import analyze_payment
 
 
 load_dotenv()
@@ -134,6 +135,35 @@ async def get_premium_data():
         "status": "success",
         "data": "Here is your premium content!",
     }
+
+
+@app.post("/sentinel/analyze")
+async def sentinel_analyze(payment: dict):
+    recipient = payment.get("recipient")
+    network = payment.get("network")
+    asset = payment.get("asset")
+    amount = payment.get("amount")
+
+    if not recipient or not network or not asset or amount is None:
+        return {
+            "decision": "BLOCK",
+            "risk_score": 100,
+            "checks": [
+                {
+                    "name": "Payment request",
+                    "passed": False,
+                    "score": 100,
+                    "message": "Incomplete payment requirements",
+                }
+            ],
+        }
+
+    return analyze_payment(
+        recipient=recipient,
+        network=network,
+        asset=asset,
+        amount=amount,
+    )
 
 
 # -----------------------------
