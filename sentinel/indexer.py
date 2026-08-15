@@ -5,9 +5,12 @@ import requests
 from dotenv import load_dotenv
 
 
-# Supports running Sentinel independently while preserving root-level settings
-# when it is imported by the API server.
-load_dotenv(Path(__file__).with_name(".env"))
+# Load the project's root .env file.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+load_dotenv(
+    PROJECT_ROOT / ".env"
+)
 
 
 INDEXER_URL = os.getenv(
@@ -52,15 +55,13 @@ def get_account(address: str):
     return data
 
 
-def get_usdc_transactions(
+def get_account_transactions(
     address: str,
     limit: int = 100,
 ):
     """
-    Fetch recent MainNet USDC transactions.
-
-    Returns actual USDC transfers while excluding
-    zero-amount opt-in transactions.
+    Fetch recent transactions involving the
+    account from the MainNet Indexer.
     """
 
     url = (
@@ -68,9 +69,44 @@ def get_usdc_transactions(
         f"{address}/transactions"
     )
 
-    # ----------------------------------------
-    # Fetch transactions involving the address
-    # ----------------------------------------
+    params = {
+        "limit": limit,
+    }
+
+    response = requests.get(
+        url,
+        params=params,
+        timeout=10,
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    return data.get(
+        "transactions",
+        [],
+    )
+
+
+def get_usdc_transactions(
+    address: str,
+    limit: int = 100,
+):
+    """
+    Fetch recent MainNet USDC transactions.
+
+    Zero-amount transactions are excluded because
+    they represent opt-in-style transactions rather
+    than actual USDC transfers.
+
+    Transactions are deduplicated by transaction ID.
+    """
+
+    url = (
+        f"{INDEXER_URL}/v2/accounts/"
+        f"{address}/transactions"
+    )
 
     params = {
         "asset-id": USDC_ASSET_ID,
@@ -92,11 +128,6 @@ def get_usdc_transactions(
         [],
     )
 
-
-    # ----------------------------------------
-    # Separate incoming/outgoing transfers
-    # ----------------------------------------
-
     incoming = []
     outgoing = []
 
@@ -106,12 +137,13 @@ def get_usdc_transactions(
 
         tx_id = tx.get("id")
 
-        # Deduplicate
+        if not tx_id:
+            continue
+
         if tx_id in seen_ids:
             continue
 
         seen_ids.add(tx_id)
-
 
         transfer = tx.get(
             "asset-transfer-transaction"
@@ -119,7 +151,6 @@ def get_usdc_transactions(
 
         if not transfer:
             continue
-
 
         amount = transfer.get(
             "amount",
@@ -134,33 +165,15 @@ def get_usdc_transactions(
             "receiver"
         )
 
-
-        # ------------------------------------
-        # Ignore zero-amount transactions
-        #
-        # These are generally opt-ins,
-        # not actual USDC payments.
-        # ------------------------------------
-
+        # Ignore zero-value opt-in transactions.
         if amount == 0:
             continue
-
-
-        # ------------------------------------
-        # Incoming
-        # ------------------------------------
 
         if receiver == address:
             incoming.append(tx)
 
-
-        # ------------------------------------
-        # Outgoing
-        # ------------------------------------
-
         if sender == address:
             outgoing.append(tx)
-
 
     return {
         "incoming": incoming,
@@ -168,15 +181,141 @@ def get_usdc_transactions(
     }
 
 
+def get_usdc_balance(account: dict):
+    """
+    Return the account's current USDC balance.
+
+    Returns 0 if the account is not opted into USDC.
+    """
+
+    for asset in account.get(
+        "assets",
+        [],
+    ):
+        if (
+            asset.get("asset-id")
+            == USDC_ASSET_ID
+        ):
+            return asset.get(
+                "amount",
+                0,
+            )
+
+    return 0
+
+
+def is_opted_into_usdc(account: dict):
+    """
+    Check whether the account is opted into
+    MainNet USDC.
+    """
+
+    for asset in account.get(
+        "assets",
+        [],
+    ):
+        if (
+            asset.get("asset-id")
+            == USDC_ASSET_ID
+        ):
+            return True
+
+    return False
+
+
+def calculate_usdc_statistics(
+    address: str,
+    incoming: list,
+    outgoing: list,
+):
+    """
+    Calculate USDC transfer statistics from
+    the transactions returned by the Indexer.
+    """
+
+    total_received = 0
+    total_sent = 0
+
+    unique_senders = set()
+    unique_receivers = set()
+
+    for tx in incoming:
+
+        transfer = tx.get(
+            "asset-transfer-transaction",
+            {},
+        )
+
+        amount = transfer.get(
+            "amount",
+            0,
+        )
+
+        sender = tx.get(
+            "sender"
+        )
+
+        total_received += amount
+
+        if (
+            sender
+            and sender != address
+        ):
+            unique_senders.add(
+                sender
+            )
+
+    for tx in outgoing:
+
+        transfer = tx.get(
+            "asset-transfer-transaction",
+            {},
+        )
+
+        amount = transfer.get(
+            "amount",
+            0,
+        )
+
+        receiver = transfer.get(
+            "receiver"
+        )
+
+        total_sent += amount
+
+        if (
+            receiver
+            and receiver != address
+        ):
+            unique_receivers.add(
+                receiver
+            )
+
+    return {
+        "total_received": total_received,
+        "total_sent": total_sent,
+        "unique_senders": unique_senders,
+        "unique_receivers": unique_receivers,
+    }
+
+
 def build_wallet_features(
     address: str,
 ):
     """
-    Build the first version of Sentinel's
-    MainNet wallet feature vector.
+    Build Sentinel's MainNet wallet feature vector.
+
+    This function combines account-level data,
+    general transaction activity, and USDC activity.
     """
 
-    account_data = get_account(address)
+    # ----------------------------------------
+    # Account data
+    # ----------------------------------------
+
+    account_data = get_account(
+        address
+    )
 
     # ----------------------------------------
     # Address does not exist on MainNet
@@ -197,13 +336,35 @@ def build_wallet_features(
 
             "current_round": None,
 
+            "algo_balance": 0,
+
+            "total_asset_holdings": 0,
+
+            "created_asset_count": 0,
+
+            "created_app_count": 0,
+
+            "usdc_opted_in": False,
+
+            "usdc_balance": 0,
+
             "usdc_inflow_tx_count": 0,
 
             "usdc_outflow_tx_count": 0,
 
-            "unique_sender_count": 0,
+            "usdc_total_received": 0,
 
-            "is_opted_in_usdc": False,
+            "usdc_total_sent": 0,
+
+            "unique_usdc_senders": 0,
+
+            "unique_usdc_receivers": 0,
+
+            "total_transaction_count": 0,
+
+            "first_activity_round": None,
+
+            "last_activity_round": None,
 
             "is_first_mainnet_appearance": True,
 
@@ -217,77 +378,16 @@ def build_wallet_features(
 
 
     # ----------------------------------------
-    # USDC transactions
-    # ----------------------------------------
-
-    transactions = get_usdc_transactions(
-        address
-    )
-
-    incoming = transactions[
-        "incoming"
-    ]
-
-    outgoing = transactions[
-        "outgoing"
-    ]
-
-
-    # ----------------------------------------
-    # USDC inflow analysis
-    # ----------------------------------------
-
-    unique_senders = set()
-
-    for tx in incoming:
-        sender = tx.get("sender")
-
-        if (
-            sender
-            and sender != address
-        ):
-            unique_senders.add(sender)
-
-
-    # ----------------------------------------
-    # USDC opt-in
-    # ----------------------------------------
-
-    is_opted_in_usdc = False
-
-    for asset in account.get(
-        "assets",
-        [],
-    ):
-        if (
-            asset.get("asset-id")
-            == USDC_ASSET_ID
-        ):
-            is_opted_in_usdc = True
-            break
-
-
-    # ----------------------------------------
-    # Account creation / age
+    # Account age
     # ----------------------------------------
 
     created_at_round = account.get(
         "created-at-round"
     )
 
-
-    # ----------------------------------------
-    # Current round
-    # ----------------------------------------
-
     current_round = account_data.get(
         "current-round"
     )
-
-
-    # ----------------------------------------
-    # Address age
-    # ----------------------------------------
 
     address_age_blocks = None
 
@@ -302,12 +402,136 @@ def build_wallet_features(
 
 
     # ----------------------------------------
-    # First appearance
+    # ALGO balance
+    #
+    # Account amount is in microALGO.
+    # ----------------------------------------
+
+    algo_balance_micro = account.get(
+        "amount",
+        0,
+    )
+
+    algo_balance = (
+        algo_balance_micro / 1_000_000
+    )
+
+
+    # ----------------------------------------
+    # Asset / application activity
+    # ----------------------------------------
+
+    assets = account.get(
+        "assets",
+        [],
+    )
+
+    created_assets = account.get(
+        "created-assets",
+        [],
+    )
+
+    created_apps = account.get(
+        "created-apps",
+        [],
+    )
+
+
+    # ----------------------------------------
+    # USDC
+    # ----------------------------------------
+
+    usdc_opted_in = (
+        is_opted_into_usdc(
+            account
+        )
+    )
+
+    usdc_balance = (
+        get_usdc_balance(
+            account
+        )
+    )
+
+
+    # ----------------------------------------
+    # USDC transactions
+    # ----------------------------------------
+
+    usdc_transactions = (
+        get_usdc_transactions(
+            address
+        )
+    )
+
+    incoming = (
+        usdc_transactions[
+            "incoming"
+        ]
+    )
+
+    outgoing = (
+        usdc_transactions[
+            "outgoing"
+        ]
+    )
+
+
+    # ----------------------------------------
+    # USDC statistics
+    # ----------------------------------------
+
+    usdc_stats = (
+        calculate_usdc_statistics(
+            address,
+            incoming,
+            outgoing,
+        )
+    )
+
+
+    # ----------------------------------------
+    # General transaction history
+    # ----------------------------------------
+
+    all_transactions = (
+        get_account_transactions(
+            address
+        )
+    )
+
+
+    first_activity_round = None
+    last_activity_round = None
+
+    if all_transactions:
+
+        rounds = [
+            tx.get(
+                "confirmed-round"
+            )
+            for tx in all_transactions
+            if tx.get(
+                "confirmed-round"
+            ) is not None
+        ]
+
+        if rounds:
+            first_activity_round = min(
+                rounds
+            )
+
+            last_activity_round = max(
+                rounds
+            )
+
+
+    # ----------------------------------------
+    # First MainNet appearance
     # ----------------------------------------
 
     is_first_mainnet_appearance = (
-        len(incoming) == 0
-        and len(outgoing) == 0
+        len(all_transactions) == 0
     )
 
 
@@ -320,6 +544,7 @@ def build_wallet_features(
 
         "exists_on_mainnet": True,
 
+        # Account age
         "address_age_blocks":
             address_age_blocks,
 
@@ -329,20 +554,75 @@ def build_wallet_features(
         "current_round":
             current_round,
 
+        # ALGO
+        "algo_balance":
+            algo_balance,
+
+        "algo_balance_micro":
+            algo_balance_micro,
+
+        # Assets / applications
+        "total_asset_holdings":
+            len(assets),
+
+        "created_asset_count":
+            len(created_assets),
+
+        "created_app_count":
+            len(created_apps),
+
+        # USDC account state
+        "usdc_opted_in":
+            usdc_opted_in,
+
+        "usdc_balance":
+            usdc_balance,
+
+        # USDC activity
         "usdc_inflow_tx_count":
             len(incoming),
 
         "usdc_outflow_tx_count":
             len(outgoing),
 
-        "unique_sender_count":
-            len(unique_senders),
+        "usdc_total_received":
+            usdc_stats[
+                "total_received"
+            ],
 
-        "is_opted_in_usdc":
-            is_opted_in_usdc,
+        "usdc_total_sent":
+            usdc_stats[
+                "total_sent"
+            ],
 
+        "unique_usdc_senders":
+            len(
+                usdc_stats[
+                    "unique_senders"
+                ]
+            ),
+
+        "unique_usdc_receivers":
+            len(
+                usdc_stats[
+                    "unique_receivers"
+                ]
+            ),
+
+        # General activity
+        "total_transaction_count":
+            len(all_transactions),
+
+        "first_activity_round":
+            first_activity_round,
+
+        "last_activity_round":
+            last_activity_round,
+
+        # Status
         "is_first_mainnet_appearance":
             is_first_mainnet_appearance,
 
-        "status": "ACTIVE_MAINNET_ADDRESS",
+        "status":
+            "ACTIVE_MAINNET_ADDRESS",
     }
