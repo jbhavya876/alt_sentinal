@@ -14,13 +14,22 @@ from x402.http.types import RouteConfig
 from x402.mechanisms.avm import ALGORAND_TESTNET_CAIP2
 from x402.mechanisms.avm.exact import ExactAvmServerScheme
 from x402.server import x402ResourceServer
-from sentinel.analyzer import analyze_payment
 
+from sentinel.analyzer import (
+    analyze_payment,
+    analyze_recipient,
+)
+
+
+# --------------------------------------------------
+# Environment
+# --------------------------------------------------
 
 load_dotenv()
 
-
-AVM_ADDRESS = os.getenv("AVM_ADDRESS")
+AVM_ADDRESS = os.getenv(
+    "AVM_ADDRESS"
+)
 
 FACILITATOR_URL = os.getenv(
     "FACILITATOR_URL",
@@ -29,17 +38,23 @@ FACILITATOR_URL = os.getenv(
 
 
 if not AVM_ADDRESS:
-    raise ValueError("AVM_ADDRESS is missing in .env")
+    raise ValueError(
+        "AVM_ADDRESS is missing in .env"
+    )
 
+
+# --------------------------------------------------
+# FastAPI
+# --------------------------------------------------
 
 app = FastAPI(
     title="AlterBlock Sentinel"
 )
 
 
-# -----------------------------
+# --------------------------------------------------
 # x402 Facilitator
-# -----------------------------
+# --------------------------------------------------
 
 facilitator = HTTPFacilitatorClient(
     FacilitatorConfig(
@@ -48,9 +63,9 @@ facilitator = HTTPFacilitatorClient(
 )
 
 
-# -----------------------------
+# --------------------------------------------------
 # x402 Resource Server
-# -----------------------------
+# --------------------------------------------------
 
 server = x402ResourceServer(
     facilitator
@@ -63,9 +78,9 @@ server.register(
 )
 
 
-# -----------------------------
+# --------------------------------------------------
 # Protected Routes
-# -----------------------------
+# --------------------------------------------------
 
 routes = {
     "GET /data": RouteConfig(
@@ -81,9 +96,9 @@ routes = {
 }
 
 
-# -----------------------------
+# --------------------------------------------------
 # x402 Payment Middleware
-# -----------------------------
+# --------------------------------------------------
 
 app.add_middleware(
     PaymentMiddlewareASGI,
@@ -92,9 +107,9 @@ app.add_middleware(
 )
 
 
-# -----------------------------
+# --------------------------------------------------
 # CORS
-# -----------------------------
+# --------------------------------------------------
 
 app.add_middleware(
     CORSMiddleware,
@@ -113,9 +128,9 @@ app.add_middleware(
 )
 
 
-# -----------------------------
-# Health Check
-# -----------------------------
+# ==================================================
+# HEALTH
+# ==================================================
 
 @app.get("/health")
 async def health_check():
@@ -125,9 +140,9 @@ async def health_check():
     }
 
 
-# -----------------------------
-# Protected Data
-# -----------------------------
+# ==================================================
+# EXISTING PROTECTED DATA
+# ==================================================
 
 @app.get("/data")
 async def get_premium_data():
@@ -137,14 +152,129 @@ async def get_premium_data():
     }
 
 
+# ==================================================
+# NEW SENTINEL VERIFICATION API
+# ==================================================
+
+@app.post("/api/v1/verify")
+async def verify_recipient(payment: dict):
+    """
+    Analyze an Algorand recipient using MainNet
+    wallet history and Sentinel's rule engine.
+
+    Expected request:
+
+    {
+        "recipient": "...",
+        "payment_usdc_amount": 10000
+    }
+
+    10000 atomic USDC = 0.01 USDC.
+    """
+
+    recipient = payment.get(
+        "recipient"
+    )
+
+    payment_usdc_amount = payment.get(
+        "payment_usdc_amount",
+        0,
+    )
+
+
+    # ------------------------------------------
+    # Validate recipient
+    # ------------------------------------------
+
+    if not recipient:
+        return {
+            "verdict": "block",
+            "risk_score": 100,
+            "reasons": [
+                "Recipient address is required"
+            ],
+        }
+
+
+    # ------------------------------------------
+    # Validate amount
+    # ------------------------------------------
+
+    try:
+        payment_usdc_amount = int(
+            payment_usdc_amount
+        )
+
+    except (
+        ValueError,
+        TypeError,
+    ):
+        return {
+            "verdict": "block",
+            "risk_score": 100,
+            "reasons": [
+                "Invalid USDC payment amount"
+            ],
+        }
+
+
+    if payment_usdc_amount < 0:
+        return {
+            "verdict": "block",
+            "risk_score": 100,
+            "reasons": [
+                "Payment amount cannot be negative"
+            ],
+        }
+
+
+    # ------------------------------------------
+    # Run Sentinel analysis
+    # ------------------------------------------
+
+    result = analyze_recipient(
+        recipient=recipient,
+        payment_usdc_amount=payment_usdc_amount,
+    )
+
+
+    # ------------------------------------------
+    # Return analysis
+    # ------------------------------------------
+
+    return result
+
+
+# ==================================================
+# LEGACY ANALYSIS ENDPOINT
+# ==================================================
+
 @app.post("/sentinel/analyze")
 async def sentinel_analyze(payment: dict):
-    recipient = payment.get("recipient")
-    network = payment.get("network")
-    asset = payment.get("asset")
-    amount = payment.get("amount")
 
-    if not recipient or not network or not asset or amount is None:
+    recipient = payment.get(
+        "recipient"
+    )
+
+    network = payment.get(
+        "network"
+    )
+
+    asset = payment.get(
+        "asset"
+    )
+
+    amount = payment.get(
+        "amount"
+    )
+
+
+    if (
+        not recipient
+        or not network
+        or not asset
+        or amount is None
+    ):
         return {
             "decision": "BLOCK",
             "risk_score": 100,
@@ -153,10 +283,12 @@ async def sentinel_analyze(payment: dict):
                     "name": "Payment request",
                     "passed": False,
                     "score": 100,
-                    "message": "Incomplete payment requirements",
+                    "message":
+                        "Incomplete payment requirements",
                 }
             ],
         }
+
 
     return analyze_payment(
         recipient=recipient,
@@ -166,9 +298,9 @@ async def sentinel_analyze(payment: dict):
     )
 
 
-# -----------------------------
-# Run Server
-# -----------------------------
+# ==================================================
+# RUN SERVER
+# ==================================================
 
 if __name__ == "__main__":
     import uvicorn

@@ -1,105 +1,212 @@
-def check_recipient(address: str):
-    if not address:
-        return {
-            "name": "Recipient address",
-            "passed": False,
-            "score": 100,
-            "message": "Recipient address is missing",
-        }
+"""
+Sentinel rule-based fraud detection.
 
-    if len(address) != 58:
-        return {
-            "name": "Recipient address",
-            "passed": False,
-            "score": 100,
-            "message": "Invalid Algorand address",
-        }
+Rules are applied before ML inference.
+"""
 
-    return {
-        "name": "Recipient address",
-        "passed": True,
-        "score": 0,
-        "message": "Valid Algorand address",
-    }
+from typing import Dict, List, Tuple
 
 
-def check_network(network: str):
-    if not network:
-        return {
-            "name": "Network",
-            "passed": False,
-            "score": 100,
-            "message": "Network information is missing",
-        }
+def apply_rules(
+    features: Dict,
+    amount: int,
+    watchlist_score: float = 0,
+    amount_ratio: float = 1.0,
+    domain_age_days: int = 9999,
+    is_in_bazaar: int = 0,
+) -> Tuple[str, List[str]]:
+    """
+    Apply Sentinel's deterministic fraud rules.
 
-    # The payment requirements already came from
-    # our Algorand TestNet x402 server.
-    if network.startswith("algorand:"):
-        return {
-            "name": "Network",
-            "passed": True,
-            "score": 0,
-            "message": "Algorand network verified",
-        }
+    Parameters
+    ----------
+    features:
+        Wallet feature vector produced by indexer.py.
 
-    return {
-        "name": "Network",
-        "passed": False,
-        "score": 80,
-        "message": "Unknown payment network",
-    }
+    amount:
+        Proposed payment amount in atomic USDC units.
 
+    watchlist_score:
+        Watchlist score for the recipient address.
 
-def check_asset(asset: str):
-    if asset != "10458941":
-        return {
-            "name": "Payment asset",
-            "passed": False,
-            "score": 70,
-            "message": "Unexpected payment asset",
-        }
+    amount_ratio:
+        Proposed payment / category P95 price.
 
-    return {
-        "name": "Payment asset",
-        "passed": True,
-        "score": 0,
-        "message": "TestNet USDC verified",
-    }
+    domain_age_days:
+        Age of the resource domain in days.
 
+    is_in_bazaar:
+        1 if the endpoint is registered in Bazaar,
+        otherwise 0.
 
-def check_amount(amount: str):
-    try:
-        amount = int(amount)
-    except (TypeError, ValueError):
-        return {
-            "name": "Payment amount",
-            "passed": False,
-            "score": 100,
-            "message": "Invalid payment amount",
-        }
+    Returns
+    -------
+    verdict, reasons
 
-    # TestNet USDC has 6 decimals.
-    # 10000 = 0.01 USDC.
+    verdict:
+        "safe", "suspicious", or "block"
+    """
 
-    if amount <= 0:
-        return {
-            "name": "Payment amount",
-            "passed": False,
-            "score": 100,
-            "message": "Invalid payment amount",
-        }
+    reasons: List[str] = []
 
-    if amount > 1_000_000:
-        return {
-            "name": "Payment amount",
-            "passed": False,
-            "score": 70,
-            "message": "Unusually large payment",
-        }
+    verdict = "safe"
 
-    return {
-        "name": "Payment amount",
-        "passed": True,
-        "score": 0,
-        "message": f"Payment amount is {amount / 1_000_000:.6f} USDC",
-    }
+    # --------------------------------------------------
+    # Extract features
+    # --------------------------------------------------
+
+    address_age = features.get(
+        "address_age_blocks",
+        0,
+    )
+
+    usdc_inflow_count = features.get(
+        "usdc_inflow_count",
+        0,
+    )
+
+    unique_sender_count = features.get(
+        "unique_sender_count",
+        0,
+    )
+
+    x402_settle_count = features.get(
+        "x402_settle_count",
+        0,
+    )
+
+    # --------------------------------------------------
+    # BLOCK RULE 1
+    #
+    # Very new address + significant payment
+    # --------------------------------------------------
+
+    if (
+        address_age < 100
+        and amount > 5000
+    ):
+        verdict = "block"
+
+        reasons.append(
+            f"New address ({address_age} blocks) "
+            f"requesting significant payment"
+        )
+
+    # --------------------------------------------------
+    # BLOCK RULE 2
+    #
+    # Known bad actor
+    # --------------------------------------------------
+
+    if watchlist_score > 0:
+
+        verdict = "block"
+
+        reasons.append(
+            "Recipient address is on the Sentinel watchlist"
+        )
+
+    # --------------------------------------------------
+    # BLOCK RULE 3
+    #
+    # No previous USDC inflows + large payment
+    # --------------------------------------------------
+
+    if (
+        usdc_inflow_count == 0
+        and amount > 10000
+    ):
+        verdict = "block"
+
+        reasons.append(
+            "Recipient has no prior USDC inflows "
+            "and is requesting a large payment"
+        )
+
+    # --------------------------------------------------
+    # BLOCK RULE 4
+    #
+    # Low counterparty diversity + high USDC volume
+    # --------------------------------------------------
+
+    if (
+        unique_sender_count < 2
+        and usdc_inflow_count > 30
+    ):
+        verdict = "block"
+
+        reasons.append(
+            "Possible wash-trading pattern: "
+            "high USDC inflow volume with low "
+            "counterparty diversity"
+        )
+
+    # --------------------------------------------------
+    # SUSPICIOUS RULE 5
+    #
+    # Price anomaly
+    # --------------------------------------------------
+
+    if amount_ratio > 3.0:
+
+        if verdict != "block":
+            verdict = "suspicious"
+
+        reasons.append(
+            f"Payment is {amount_ratio:.2f}x "
+            f"the category benchmark"
+        )
+
+    # --------------------------------------------------
+    # SUSPICIOUS RULE 6
+    #
+    # Fresh domain
+    # --------------------------------------------------
+
+    if domain_age_days < 7:
+
+        if verdict != "block":
+            verdict = "suspicious"
+
+        reasons.append(
+            f"Resource domain is only "
+            f"{domain_age_days} days old"
+        )
+
+    # --------------------------------------------------
+    # SUSPICIOUS RULE 7
+    #
+    # Young wallet
+    # --------------------------------------------------
+
+    if address_age < 500:
+
+        if verdict != "block":
+            verdict = "suspicious"
+
+        reasons.append(
+            f"Recipient wallet is young "
+            f"({address_age} blocks old)"
+        )
+
+    # --------------------------------------------------
+    # SUSPICIOUS RULE 8
+    #
+    # No x402 history + not in Bazaar
+    # --------------------------------------------------
+
+    if (
+        x402_settle_count == 0
+        and is_in_bazaar == 0
+    ):
+
+        if verdict != "block":
+            verdict = "suspicious"
+
+        reasons.append(
+            "Endpoint has no previous x402 "
+            "settlement history and is not "
+            "registered in Bazaar"
+        )
+
+    return verdict, reasons

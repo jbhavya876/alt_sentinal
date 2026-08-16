@@ -1,11 +1,15 @@
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
 
 
-# Load the project's root .env file.
+# --------------------------------------------------
+# Environment
+# --------------------------------------------------
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 load_dotenv(
@@ -20,6 +24,14 @@ INDEXER_URL = os.getenv(
 
 USDC_ASSET_ID = 31566704
 
+# Base64 encoding of:
+# x402-payment-v2
+X402_NOTE_PREFIX = "eDQwMi1wYXltZW50LXYy"
+
+
+# --------------------------------------------------
+# Account
+# --------------------------------------------------
 
 def get_account(address: str):
     """
@@ -55,6 +67,10 @@ def get_account(address: str):
     return data
 
 
+# --------------------------------------------------
+# General account transactions
+# --------------------------------------------------
+
 def get_account_transactions(
     address: str,
     limit: int = 100,
@@ -88,6 +104,10 @@ def get_account_transactions(
         [],
     )
 
+
+# --------------------------------------------------
+# USDC transactions
+# --------------------------------------------------
 
 def get_usdc_transactions(
     address: str,
@@ -181,7 +201,203 @@ def get_usdc_transactions(
     }
 
 
-def get_usdc_balance(account: dict):
+# --------------------------------------------------
+# 30-day USDC transactions
+# --------------------------------------------------
+
+def get_usdc_transactions_30d(
+    address: str,
+    limit: int = 100,
+):
+    """
+    Fetch USDC transactions from the last 30 days.
+
+    The Indexer is queried using an ISO-8601
+    after-time boundary.
+    """
+
+    url = (
+        f"{INDEXER_URL}/v2/accounts/"
+        f"{address}/transactions"
+    )
+
+    cutoff = (
+        datetime.now(timezone.utc)
+        - timedelta(days=30)
+    )
+
+    after_time = cutoff.strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+    params = {
+        "asset-id": USDC_ASSET_ID,
+        "limit": limit,
+        "after-time": after_time,
+    }
+
+    response = requests.get(
+        url,
+        params=params,
+        timeout=10,
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    transactions = data.get(
+        "transactions",
+        [],
+    )
+
+    incoming = []
+    outgoing = []
+
+    seen_ids = set()
+
+    for tx in transactions:
+
+        tx_id = tx.get("id")
+
+        if not tx_id:
+            continue
+
+        if tx_id in seen_ids:
+            continue
+
+        seen_ids.add(tx_id)
+
+        transfer = tx.get(
+            "asset-transfer-transaction"
+        )
+
+        if not transfer:
+            continue
+
+        amount = transfer.get(
+            "amount",
+            0,
+        )
+
+        sender = tx.get(
+            "sender"
+        )
+
+        receiver = transfer.get(
+            "receiver"
+        )
+
+        # Ignore opt-ins / zero-value transfers.
+        if amount == 0:
+            continue
+
+        if receiver == address:
+            incoming.append(tx)
+
+        if sender == address:
+            outgoing.append(tx)
+
+    return {
+        "incoming": incoming,
+        "outgoing": outgoing,
+    }
+
+
+# --------------------------------------------------
+# Prior x402 settlements
+# --------------------------------------------------
+
+def get_x402_settlements(
+    address: str,
+    limit: int = 100,
+):
+    """
+    Find previous x402 payment transactions involving
+    this address.
+
+    The Master Build Guide identifies the x402 v2
+    note prefix as the settlement signal.
+    """
+
+    url = (
+        f"{INDEXER_URL}/v2/accounts/"
+        f"{address}/transactions"
+    )
+
+    params = {
+        "note-prefix": X402_NOTE_PREFIX,
+        "limit": limit,
+    }
+
+    response = requests.get(
+        url,
+        params=params,
+        timeout=10,
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    return data.get(
+        "transactions",
+        [],
+    )
+
+
+def get_x402_settlements_30d(
+    address: str,
+    limit: int = 100,
+):
+    """
+    Find x402 payment transactions involving
+    this address during the last 30 days.
+    """
+
+    url = (
+        f"{INDEXER_URL}/v2/accounts/"
+        f"{address}/transactions"
+    )
+
+    cutoff = (
+        datetime.now(timezone.utc)
+        - timedelta(days=30)
+    )
+
+    after_time = cutoff.strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+    params = {
+        "note-prefix": X402_NOTE_PREFIX,
+        "limit": limit,
+        "after-time": after_time,
+    }
+
+    response = requests.get(
+        url,
+        params=params,
+        timeout=10,
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    return data.get(
+        "transactions",
+        [],
+    )
+
+
+# --------------------------------------------------
+# USDC balance
+# --------------------------------------------------
+
+def get_usdc_balance(
+    account: dict,
+):
     """
     Return the account's current USDC balance.
 
@@ -204,7 +420,13 @@ def get_usdc_balance(account: dict):
     return 0
 
 
-def is_opted_into_usdc(account: dict):
+# --------------------------------------------------
+# USDC opt-in
+# --------------------------------------------------
+
+def is_opted_into_usdc(
+    account: dict,
+):
     """
     Check whether the account is opted into
     MainNet USDC.
@@ -223,14 +445,17 @@ def is_opted_into_usdc(account: dict):
     return False
 
 
+# --------------------------------------------------
+# USDC statistics
+# --------------------------------------------------
+
 def calculate_usdc_statistics(
     address: str,
     incoming: list,
     outgoing: list,
 ):
     """
-    Calculate USDC transfer statistics from
-    the transactions returned by the Indexer.
+    Calculate USDC transfer statistics.
     """
 
     total_received = 0
@@ -299,27 +524,31 @@ def calculate_usdc_statistics(
     }
 
 
+# --------------------------------------------------
+# Wallet feature engine
+# --------------------------------------------------
+
 def build_wallet_features(
     address: str,
+    payment_usdc_amount: int = 0,
 ):
     """
     Build Sentinel's MainNet wallet feature vector.
 
-    This function combines account-level data,
-    general transaction activity, and USDC activity.
+    payment_usdc_amount:
+        The proposed x402 payment in atomic USDC units.
+
+        Example:
+            10000 = 0.01 USDC
     """
 
     # ----------------------------------------
-    # Account data
+    # Account
     # ----------------------------------------
 
     account_data = get_account(
         address
     )
-
-    # ----------------------------------------
-    # Address does not exist on MainNet
-    # ----------------------------------------
 
     if not account_data.get(
         "exists",
@@ -348,17 +577,36 @@ def build_wallet_features(
 
             "usdc_balance": 0,
 
-            "usdc_inflow_tx_count": 0,
+            "usdc_inflow_count": 0,
 
-            "usdc_outflow_tx_count": 0,
+            "usdc_outflow_count": 0,
 
             "usdc_total_received": 0,
 
             "usdc_total_sent": 0,
 
-            "unique_usdc_senders": 0,
+            "unique_sender_count": 0,
 
-            "unique_usdc_receivers": 0,
+            "unique_receiver_count": 0,
+
+            "usdc_inflow_count_30d": 0,
+
+            "usdc_outflow_count_30d": 0,
+
+            "usdc_received_30d": 0,
+
+            "usdc_sent_30d": 0,
+
+            "unique_senders_30d": 0,
+
+            "unique_receivers_30d": 0,
+
+            "x402_settle_count": 0,
+
+            "x402_settle_count_30d": 0,
+
+            "payment_usdc_amount":
+                payment_usdc_amount,
 
             "total_transaction_count": 0,
 
@@ -376,17 +624,17 @@ def build_wallet_features(
         {},
     )
 
+    current_round = account_data.get(
+        "current-round"
+    )
+
 
     # ----------------------------------------
-    # Account age
+    # Address age
     # ----------------------------------------
 
     created_at_round = account.get(
         "created-at-round"
-    )
-
-    current_round = account_data.get(
-        "current-round"
     )
 
     address_age_blocks = None
@@ -403,8 +651,6 @@ def build_wallet_features(
 
     # ----------------------------------------
     # ALGO balance
-    #
-    # Account amount is in microALGO.
     # ----------------------------------------
 
     algo_balance_micro = account.get(
@@ -418,7 +664,7 @@ def build_wallet_features(
 
 
     # ----------------------------------------
-    # Asset / application activity
+    # Assets / applications
     # ----------------------------------------
 
     assets = account.get(
@@ -438,7 +684,7 @@ def build_wallet_features(
 
 
     # ----------------------------------------
-    # USDC
+    # USDC account state
     # ----------------------------------------
 
     usdc_opted_in = (
@@ -455,7 +701,7 @@ def build_wallet_features(
 
 
     # ----------------------------------------
-    # USDC transactions
+    # Recent USDC history
     # ----------------------------------------
 
     usdc_transactions = (
@@ -476,16 +722,59 @@ def build_wallet_features(
         ]
     )
 
-
-    # ----------------------------------------
-    # USDC statistics
-    # ----------------------------------------
-
     usdc_stats = (
         calculate_usdc_statistics(
             address,
             incoming,
             outgoing,
+        )
+    )
+
+
+    # ----------------------------------------
+    # 30-day USDC history
+    # ----------------------------------------
+
+    usdc_30d = (
+        get_usdc_transactions_30d(
+            address
+        )
+    )
+
+    incoming_30d = (
+        usdc_30d[
+            "incoming"
+        ]
+    )
+
+    outgoing_30d = (
+        usdc_30d[
+            "outgoing"
+        ]
+    )
+
+    usdc_stats_30d = (
+        calculate_usdc_statistics(
+            address,
+            incoming_30d,
+            outgoing_30d,
+        )
+    )
+
+
+    # ----------------------------------------
+    # x402 settlement history
+    # ----------------------------------------
+
+    x402_transactions = (
+        get_x402_settlements(
+            address
+        )
+    )
+
+    x402_transactions_30d = (
+        get_x402_settlements_30d(
+            address
         )
     )
 
@@ -499,7 +788,6 @@ def build_wallet_features(
             address
         )
     )
-
 
     first_activity_round = None
     last_activity_round = None
@@ -536,7 +824,7 @@ def build_wallet_features(
 
 
     # ----------------------------------------
-    # Return feature vector
+    # Final feature vector
     # ----------------------------------------
 
     return {
@@ -561,7 +849,7 @@ def build_wallet_features(
         "algo_balance_micro":
             algo_balance_micro,
 
-        # Assets / applications
+        # Assets
         "total_asset_holdings":
             len(assets),
 
@@ -571,18 +859,18 @@ def build_wallet_features(
         "created_app_count":
             len(created_apps),
 
-        # USDC account state
+        # USDC state
         "usdc_opted_in":
             usdc_opted_in,
 
         "usdc_balance":
             usdc_balance,
 
-        # USDC activity
-        "usdc_inflow_tx_count":
+        # USDC historical activity
+        "usdc_inflow_count":
             len(incoming),
 
-        "usdc_outflow_tx_count":
+        "usdc_outflow_count":
             len(outgoing),
 
         "usdc_total_received":
@@ -595,19 +883,63 @@ def build_wallet_features(
                 "total_sent"
             ],
 
-        "unique_usdc_senders":
+        "unique_sender_count":
             len(
                 usdc_stats[
                     "unique_senders"
                 ]
             ),
 
-        "unique_usdc_receivers":
+        "unique_receiver_count":
             len(
                 usdc_stats[
                     "unique_receivers"
                 ]
             ),
+
+        # 30-day USDC activity
+        "usdc_inflow_count_30d":
+            len(incoming_30d),
+
+        "usdc_outflow_count_30d":
+            len(outgoing_30d),
+
+        "usdc_received_30d":
+            usdc_stats_30d[
+                "total_received"
+            ],
+
+        "usdc_sent_30d":
+            usdc_stats_30d[
+                "total_sent"
+            ],
+
+        "unique_senders_30d":
+            len(
+                usdc_stats_30d[
+                    "unique_senders"
+                ]
+            ),
+
+        "unique_receivers_30d":
+            len(
+                usdc_stats_30d[
+                    "unique_receivers"
+                ]
+            ),
+
+        # x402
+        "x402_settle_count":
+            len(x402_transactions),
+
+        "x402_settle_count_30d":
+            len(
+                x402_transactions_30d
+            ),
+
+        # Proposed payment
+        "payment_usdc_amount":
+            payment_usdc_amount,
 
         # General activity
         "total_transaction_count":
