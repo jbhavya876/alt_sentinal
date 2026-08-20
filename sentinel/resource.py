@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 from typing import Any
 from urllib.parse import urlparse
-
+import socket
+import ssl
+from datetime import datetime, timezone
 import requests
 from x402.mechanisms.avm import ALGORAND_MAINNET_CAIP2
 
@@ -32,6 +34,54 @@ def extract_domain(resource_url: str) -> str | None:
     except Exception:
         return None
 
+def get_domain_age_days(resource_url: str) -> int | None:
+    """
+    Return the age of the resource domain's TLS certificate in days.
+
+    The age is calculated from the certificate's `notBefore`
+    timestamp. Returns None when the certificate cannot be retrieved.
+    """
+
+    domain = extract_domain(resource_url)
+
+    if not domain:
+        return None
+
+    try:
+        context = ssl.create_default_context()
+
+        with socket.create_connection(
+            (domain, 443),
+            timeout=5,
+        ) as sock:
+            with context.wrap_socket(
+                sock,
+                server_hostname=domain,
+            ) as secure_sock:
+
+                certificate = secure_sock.getpeercert()
+
+        not_before = certificate.get("notBefore")
+
+        if not not_before:
+            return None
+
+        issued_at = datetime.strptime(
+            not_before,
+            "%b %d %H:%M:%S %Y %Z",
+        ).replace(tzinfo=timezone.utc)
+
+        age = datetime.now(timezone.utc) - issued_at
+
+        return max(0, age.days)
+
+    except (
+        OSError,
+        ssl.SSLError,
+        ValueError,
+        socket.timeout,
+    ):
+        return None
 
 def _find_algorand_accept(
     item: dict[str, Any],
@@ -95,7 +145,7 @@ def lookup_bazaar(
         response = requests.get(
             f"{bazaar_url.rstrip('/')}/discovery/resources",
             params=params,
-            timeout=5,
+            timeout=10,
         )
 
         response.raise_for_status()
@@ -190,6 +240,7 @@ def analyze_resource(
             "url": resource_url,
             "valid_url": False,
             "domain": None,
+            "domain_age_days": None,
             "bazaar_registered": None,
             "bazaar_checked": False,
             "bazaar_error": "Invalid resource URL",
@@ -203,6 +254,8 @@ def analyze_resource(
 
     domain = extract_domain(resource_url)
 
+    domain_age_days = get_domain_age_days(resource_url)
+
     bazaar = lookup_bazaar(
         resource_url=resource_url,
         recipient=recipient,
@@ -212,6 +265,7 @@ def analyze_resource(
         "url": resource_url,
         "valid_url": True,
         "domain": domain,
+        "domain_age_days": domain_age_days,
         "bazaar_registered": bazaar["bazaar_registered"],
         "bazaar_checked": bazaar["bazaar_checked"],
         "bazaar_error": bazaar["bazaar_error"],

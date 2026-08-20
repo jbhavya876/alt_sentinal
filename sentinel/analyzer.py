@@ -1,4 +1,5 @@
 from .indexer import build_wallet_features
+from .resource import analyze_resource
 from .rules import apply_rules
 
 
@@ -8,13 +9,14 @@ def analyze_recipient(
     watchlist_score: float = 0,
     amount_ratio: float = 1.0,
     domain_age_days: int = 9999,
-    is_in_bazaar: int = 0,
+    resource_url: str | None = None,
 ):
     """
     Analyze an Algorand recipient using:
 
     1. MainNet wallet features
-    2. Sentinel deterministic fraud rules
+    2. x402 resource/Bazaar features
+    3. Sentinel deterministic fraud rules
 
     payment_usdc_amount is expressed in atomic USDC units.
 
@@ -32,6 +34,41 @@ def analyze_recipient(
     )
 
     # ----------------------------------------
+    # Analyze resource independently
+    # ----------------------------------------
+
+    resource = None
+
+    bazaar_registered = None
+
+    if resource is not None:
+        features["bazaar_registered"] = resource.get(
+            "bazaar_registered"
+        )
+
+        features["bazaar_verify_count"] = resource.get(
+            "verify_count"
+        )
+
+        features["bazaar_settle_count"] = resource.get(
+            "settle_count"
+        )
+
+    if resource_url:
+        resource = analyze_resource(
+            resource_url=resource_url,
+            recipient=recipient,
+        )
+
+    if resource is not None:
+        domain_age_days = resource.get(
+            "domain_age_days"
+        )
+
+        if domain_age_days is None:
+            domain_age_days = 9999
+
+    # ----------------------------------------
     # Apply deterministic rules
     # ----------------------------------------
 
@@ -41,7 +78,7 @@ def analyze_recipient(
         watchlist_score=watchlist_score,
         amount_ratio=amount_ratio,
         domain_age_days=domain_age_days,
-        is_in_bazaar=is_in_bazaar,
+        bazaar_registered=bazaar_registered,
     )
 
     # ----------------------------------------
@@ -66,14 +103,11 @@ def analyze_recipient(
 
     return {
         "recipient": recipient,
-
         "verdict": verdict,
-
         "risk_score": risk_score,
-
         "reasons": reasons,
-
         "features": features,
+        "resource": resource,
     }
 
 
@@ -128,4 +162,7 @@ def analyze_payment(
 
         "features":
             result["features"],
+
+        "resource":
+            result["resource"],
     }

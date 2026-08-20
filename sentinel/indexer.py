@@ -66,6 +66,52 @@ def get_account(address: str):
 
     return data
 
+def get_asset(asset_id: int):
+    """
+    Fetch ASA metadata from the Algorand MainNet Indexer.
+    """
+    url = f"{INDEXER_URL}/v2/assets/{asset_id}"
+
+    response = requests.get(
+        url,
+        timeout=10,
+    )
+
+    response.raise_for_status()
+
+    return response.json().get("asset")
+
+def get_clawback_asa_count(account: dict) -> int:
+    """
+    Count assets held by the account that have
+    a configured clawback address.
+    """
+
+    count = 0
+
+    for asset in account.get("assets", []):
+        asset_id = asset.get("asset-id")
+
+        if not asset_id:
+            continue
+
+        try:
+            asset_info = get_asset(asset_id)
+
+            params = asset_info.get(
+                "params",
+                {},
+            )
+
+            clawback = params.get("clawback")
+
+            if clawback:
+                count += 1
+
+        except requests.RequestException:
+            continue
+
+    return count
 
 # --------------------------------------------------
 # General account transactions

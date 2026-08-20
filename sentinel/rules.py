@@ -13,7 +13,7 @@ def apply_rules(
     watchlist_score: float = 0,
     amount_ratio: float = 1.0,
     domain_age_days: int = 9999,
-    is_in_bazaar: int = 0,
+    bazaar_registered: bool | None = None,
 ) -> Tuple[str, List[str]]:
     """
     Apply Sentinel's deterministic fraud rules.
@@ -35,9 +35,10 @@ def apply_rules(
     domain_age_days:
         Age of the resource domain in days.
 
-    is_in_bazaar:
-        1 if the endpoint is registered in Bazaar,
-        otherwise 0.
+    bazaar_registered:
+        True if the endpoint is registered in Bazaar,
+        False if Bazaar was checked and the endpoint was not found,
+        None if Bazaar could not be checked.
 
     Returns
     -------
@@ -197,9 +198,8 @@ def apply_rules(
 
     if (
         x402_settle_count == 0
-        and is_in_bazaar == 0
+        and bazaar_registered is False
     ):
-
         if verdict != "block":
             verdict = "suspicious"
 

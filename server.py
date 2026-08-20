@@ -166,7 +166,8 @@ async def verify_recipient(payment: dict):
 
     {
         "recipient": "...",
-        "payment_usdc_amount": 10000
+        "payment_usdc_amount": 10000,
+        "resource_url": "https://example.com/api/data"
     }
 
     10000 atomic USDC = 0.01 USDC.
@@ -179,6 +180,10 @@ async def verify_recipient(payment: dict):
     payment_usdc_amount = payment.get(
         "payment_usdc_amount",
         0,
+    )
+
+    resource_url = payment.get(
+        "resource_url"
     )
 
 
@@ -235,6 +240,7 @@ async def verify_recipient(payment: dict):
     result = analyze_recipient(
         recipient=recipient,
         payment_usdc_amount=payment_usdc_amount,
+        resource_url=resource_url,
     )
 
 
